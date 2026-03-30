@@ -1,4 +1,5 @@
-# ... existing code ...
+from flask import Flask, jsonify
+from flask_cors import CORS
 import requests
 import feedparser
 from bs4 import BeautifulSoup
@@ -13,6 +14,7 @@ CORS(app)
 
 # 設定 NVIDIA API (需在 Vercel 後台設定環境變數 NVIDIA_API_KEY)
 api_key = os.environ.get("NVIDIA_API_KEY")
+client = None
 if api_key:
     client = OpenAI(
         base_url="https://integrate.api.nvidia.com/v1",
@@ -20,7 +22,27 @@ if api_key:
     )
 
 # 選擇值得信賴的 RSS 來源 (這裡以 TechCrunch 為例，也可以換成 Reuters Tech 等)
-# ... existing code ...
+RSS_FEED_URL = "https://techcrunch.com/feed/"
+
+def fetch_and_parse_news():
+    """抓取 RSS 並擷取第一篇新聞的內文"""
+    # 解析 RSS
+    feed = feedparser.parse(RSS_FEED_URL)
+    if not feed.entries:
+        raise Exception("無法從 RSS 獲取新聞列表")
+    
+    # 為了避免 Vercel 10秒 Timeout 限制，我們每次只處理最新的一篇(A1頭條)
+    top_article = feed.entries[0]
+    title = top_article.title
+    link = top_article.link
+    
+    # 簡單爬取網頁內文 (使用 BeautifulSoup)
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    response = requests.get(link, headers=headers, timeout=5)
+    soup = BeautifulSoup(response.content, 'html.parser')
+    
+    # 擷取段落 (不同網站的結構不同，這裡抓取 p 標籤)
+    paragraphs = soup.find_all('p')
     # 只取前 5 段避免 Token 過多或超時
     content_text = "\n\n".join([p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 20][:5])
     
@@ -71,7 +93,7 @@ def get_daily_news():
     debug_info = {}
     try:
         # 1. 檢查 API Key
-        if not api_key:
+        if not api_key or not client:
             raise Exception("伺服器遺失 NVIDIA_API_KEY 環境變數")
             
         debug_info["step_1"] = "API Key checked"
@@ -85,4 +107,29 @@ def get_daily_news():
         debug_info["step_3"] = "AI Analysis completed"
         
         # 4. 組合最終資料
-# ... existing code ...
+        final_data = {
+            "title": title,
+            "url": link,
+            "importance": analysis_result.get("importance", 3),
+            "objectivity": analysis_result.get("objectivity_analysis", "無法評估"),
+            "paragraphs": analysis_result.get("content", [])
+        }
+        
+        return jsonify({
+            "status": "success",
+            "data": final_data,
+            "debug": debug_info
+        }), 200
+
+    except Exception as e:
+        error_msg = str(e)
+        debug_info["error_trace"] = traceback.format_exc()
+        return jsonify({
+            "status": "error",
+            "message": error_msg,
+            "debug": debug_info
+        }), 500
+
+# 本地端測試用
+if __name__ == '__main__':
+    app.run(debug=True, port=5328)
