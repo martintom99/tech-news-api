@@ -72,7 +72,7 @@ def fetch_and_parse_news():
     return articles
 
 def analyze_and_translate_with_llm(title, content):
-    # 🌟 優化提示詞，要求全文逐段翻譯
+    # 🌟 優化提示詞，要求同時翻譯標題與全文
     prompt = f"""
     你是一個專業的科技新聞編譯。請閱讀以下英文新聞並進行全文翻譯。
     
@@ -82,12 +82,14 @@ def analyze_and_translate_with_llm(title, content):
     {content}
     
     任務要求：
-    1. 評估重要程度 (importance): 1-5 數字。
-    2. 客觀性分析 (objectivity_analysis): 簡短一句話。
-    3. 全文翻譯 (content): 將提供的每一段英文內容都翻譯成流暢的繁體中文。
+    1. 將新聞標題翻譯成流暢且具吸引力的繁體中文標題。
+    2. 評估重要程度 (importance): 1-5 數字。
+    3. 客觀性分析 (objectivity_analysis): 簡短一句話。
+    4. 全文翻譯 (content): 將提供的每一段英文內容都翻譯成流暢的繁體中文。
     
-    請嚴格遵守以下 JSON 格式回傳：
+    請嚴格遵守以下 JSON 格式回傳（僅回傳 JSON 字串）：
     {{
+      "title_zh": "翻譯後的繁體中文標題",
       "importance": 5,
       "objectivity_analysis": "...",
       "content": [
@@ -116,19 +118,20 @@ def main():
         final_data = []
         
         for idx, article in enumerate(articles):
-            print(f"⏳ [{idx+1}/{len(articles)}] 正在進行 AI 全文翻譯: {article['title']}")
+            print(f"⏳ [{idx+1}/{len(articles)}] 正在進行 AI 全文與標題翻譯: {article['title']}")
             try:
                 # 稍微休息避免 API 頻率限制
                 time.sleep(3) 
                 result = analyze_and_translate_with_llm(article['title'], article['content'])
                 final_data.append({
-                    "title": article['title'],
+                    "title": result.get("title_zh", article['title']), # 使用翻譯後的中文標題
+                    "original_title": article['title'], # 保留原始標題備查
                     "url": article['link'],
                     "importance": result.get("importance", 3),
                     "objectivity": result.get("objectivity_analysis", "中立報導"),
                     "paragraphs": result.get("content", [])
                 })
-                print(f"  ✔️ 全文翻譯完成！共 {len(result.get('content', []))} 個段落。")
+                print(f"  ✔️ 標題與全文翻譯完成！")
             except Exception as ai_e:
                 print(f"  ❌ 翻譯失敗: {ai_e}")
                 continue
@@ -148,7 +151,7 @@ def main():
             'articles': final_data
         })
         
-        print(f"🎉 任務圓滿完成！{today_str} 的新聞已全面更新至資料庫。")
+        print(f"🎉 任務圓滿完成！{today_str} 的新聞標題與內容已全面更新。")
 
     except Exception as e:
         traceback.print_exc()
