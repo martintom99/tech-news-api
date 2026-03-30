@@ -11,12 +11,10 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 
 print("=======================================")
-print("🚀 開始執行每日新聞抓取與 AI 翻譯批次任務")
+print("🚀 開始執行每日新聞抓取與 AI 全文翻譯任務")
 print("=======================================")
 
-# ==========================================
-# 1. 初始設定 (NVIDIA & Firebase)
-# ==========================================
+# 1. 初始設定
 nvidia_api_key = os.environ.get("NVIDIA_API_KEY")
 if not nvidia_api_key:
     print("❌ 錯誤: 找不到 NVIDIA_API_KEY 環境變數")
@@ -42,9 +40,6 @@ if not firebase_admin._apps:
 db = firestore.client()
 RSS_FEED_URL = "https://techcrunch.com/feed/"
 
-# ==========================================
-# 2. 爬蟲與 AI 翻譯函數 (已解除時間限制)
-# ==========================================
 def fetch_and_parse_news():
     print("📡 正在從 RSS 抓取新聞列表...")
     feed = feedparser.parse(RSS_FEED_URL)
@@ -52,41 +47,61 @@ def fetch_and_parse_news():
         raise Exception("無法從 RSS 獲取新聞列表")
     
     articles = []
-    # 🌟 因為 GitHub 沒有 10 秒限制，我們霸氣地一次抓 6 篇頭條！
-    for top_article in feed.entries[:6]:
+    # 抓取最新的 5 篇頭條
+    for top_article in feed.entries[:5]:
         title = top_article.title
         link = top_article.link
         
         headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(link, headers=headers, timeout=10)
-        soup = BeautifulSoup(response.content, 'html.parser')
+        try:
+            response = requests.get(link, headers=headers, timeout=15)
+            soup = BeautifulSoup(response.content, 'html.parser')
+            
+            # 抓取所有內容段落
+            paragraphs = soup.find_all('p')
+            # 🌟 擴大抓取範圍至前 20 段，確保涵蓋全文
+            content_segments = [p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 30]
+            content_text = "\n\n".join(content_segments[:20]) 
+            
+            articles.append({"title": title, "link": link, "content": content_text})
+        except Exception as e:
+            print(f"  ⚠️ 無法抓取文章 {title}: {e}")
+            continue
         
-        paragraphs = soup.find_all('p')
-        # 🌟 每篇抓取前 5 段，讓翻譯內容更豐富
-        content_text = "\n\n".join([p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 20][:5])
-        articles.append({"title": title, "link": link, "content": content_text})
-        
-    print(f"✅ 成功獲取 {len(articles)} 篇新聞，準備交給 AI 翻譯。")
+    print(f"✅ 成功獲取 {len(articles)} 篇新聞內容。")
     return articles
 
 def analyze_and_translate_with_llm(title, content):
+    # 🌟 優化提示詞，要求全文逐段翻譯
     prompt = f"""
-    你是一個專業、中立的科技新聞編譯。請閱讀以下英文新聞標題與內文。
+    你是一個專業的科技新聞編譯。請閱讀以下英文新聞並進行全文翻譯。
+    
     新聞標題: {title}
-    新聞內文:
+    
+    新聞全文內容:
     {content}
     
-    請幫我完成以下任務，並嚴格遵守 JSON 格式回傳（純粹的 JSON 字串）：
-    1. "importance": 評估這則新聞的重要程度 (1到5的整數，5為最重要，例如A1頭條等級)。
-    2. "objectivity_analysis": 評估這篇報導的客觀性 (簡短的一句話)。
-    3. "content": 將原文逐段翻譯成繁體中文。陣列元素包含 "en" (英文) 和 "zh" (繁中)。
+    任務要求：
+    1. 評估重要程度 (importance): 1-5 數字。
+    2. 客觀性分析 (objectivity_analysis): 簡短一句話。
+    3. 全文翻譯 (content): 將提供的每一段英文內容都翻譯成流暢的繁體中文。
+    
+    請嚴格遵守以下 JSON 格式回傳：
+    {{
+      "importance": 5,
+      "objectivity_analysis": "...",
+      "content": [
+        {{ "en": "Original paragraph 1...", "zh": "對應的繁體中文翻譯..." }},
+        {{ "en": "Original paragraph 2...", "zh": "對應的繁體中文翻譯..." }}
+      ]
+    }}
     """
     
     response = client.chat.completions.create(
         model="meta/llama-3.1-70b-instruct",
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.2,
-        max_tokens=2500,
+        temperature=0.1,
+        max_tokens=4096, # 🌟 提高 Token 上限以容納全文內容
     )
     
     try:
@@ -95,41 +110,37 @@ def analyze_and_translate_with_llm(title, content):
     except Exception as e:
         raise Exception(f"LLM 解析失敗: {str(e)}")
 
-# ==========================================
-# 3. 主程式執行邏輯
-# ==========================================
 def main():
     try:
         articles = fetch_and_parse_news()
         final_data = []
         
         for idx, article in enumerate(articles):
-            print(f"⏳ [{idx+1}/{len(articles)}] 正在使用 AI 翻譯: {article['title']}")
+            print(f"⏳ [{idx+1}/{len(articles)}] 正在進行 AI 全文翻譯: {article['title']}")
             try:
-                # 🌟 每次問完 AI 休息 5 秒，對 API 非常友善，絕對不會被擋
-                time.sleep(5) 
-                analysis_result = analyze_and_translate_with_llm(article['title'], article['content'])
+                # 稍微休息避免 API 頻率限制
+                time.sleep(3) 
+                result = analyze_and_translate_with_llm(article['title'], article['content'])
                 final_data.append({
                     "title": article['title'],
                     "url": article['link'],
-                    "importance": analysis_result.get("importance", 3),
-                    "objectivity": analysis_result.get("objectivity_analysis", "無"),
-                    "paragraphs": analysis_result.get("content", [])
+                    "importance": result.get("importance", 3),
+                    "objectivity": result.get("objectivity_analysis", "中立報導"),
+                    "paragraphs": result.get("content", [])
                 })
-                print(f"  ✔️ 翻譯成功！")
+                print(f"  ✔️ 全文翻譯完成！共 {len(result.get('content', []))} 個段落。")
             except Exception as ai_e:
                 print(f"  ❌ 翻譯失敗: {ai_e}")
                 continue
                 
         if not final_data:
-            print("❌ 嚴重錯誤：所有新聞解析皆失敗")
+            print("❌ 嚴重錯誤：無任何資料存入")
             exit(1)
 
-        # 取得今天的台灣日期 (UTC+8)
+        # 取得台灣日期
         tz_tpe = timezone(timedelta(hours=8))
         today_str = datetime.now(tz_tpe).strftime("%Y-%m-%d")
         
-        print("💾 正在將資料寫入 Firebase 資料庫...")
         doc_ref = db.collection('daily_news').document(today_str)
         doc_ref.set({
             'date': today_str,
@@ -137,10 +148,9 @@ def main():
             'articles': final_data
         })
         
-        print(f"🎉 任務圓滿完成！共 {len(final_data)} 篇新聞已成功存入資料庫 ({today_str})")
+        print(f"🎉 任務圓滿完成！{today_str} 的新聞已全面更新至資料庫。")
 
     except Exception as e:
-        print(f"❌ 程式執行發生例外錯誤:")
         traceback.print_exc()
         exit(1)
 
